@@ -1,6 +1,6 @@
-from __future__ import with_statement
+from __future__ import print_function
 from os import path
-from flask import _request_ctx_stack, url_for
+from flask import _request_ctx_stack
 from flask.templating import render_template_string
 from webassets.env import (\
     BaseEnvironment, ConfigStorage, env_options, Resolver, url_prefix_join)
@@ -8,7 +8,7 @@ from webassets.filter import Filter, register_filter
 from webassets.loaders import PythonLoader, YAMLLoader
 
 
-__version__ = (0, 9, 'dev')
+__version__ = (0, 10, 'dev')
 __webassets_version__ = ('dev',)  # webassets core compatibility. used in setup.py
 
 
@@ -24,6 +24,7 @@ class Jinja2Filter(Filter):
     Flask contexts.
     """
     name = 'jinja2'
+    max_debug_level = None
 
     def __init__(self, context=None):
         super(Jinja2Filter, self).__init__()
@@ -224,7 +225,20 @@ class FlaskResolver(Resolver):
         If an absolute path is given via ``filepath``, it will be
         used instead. This is needed because ``item`` may be a
         glob instruction that was resolved to multiple files.
+
+        If app.config("FLASK_ASSETS_USE_S3") exists and is True
+        then we import the url_for function from flask.ext.s3,
+        otherwise we import url_for from flask directly.
         """
+        if ctx.environment._app.config.get("FLASK_ASSETS_USE_S3"):
+            try:
+                from flask.ext.s3 import url_for
+            except ImportError as e:
+                print("You must have Flask S3 to use FLASK_ASSETS_USE_S3 option")
+                raise e
+        else:
+            from flask import url_for
+
         directory, rel_path, endpoint = self.split_prefix(ctx, item)
 
         if filepath is not None:
@@ -261,10 +275,19 @@ class Environment(BaseEnvironment):
         """
         if self.app is not None:
             return self.app
-        else:
-            ctx = _request_ctx_stack.top
-            if ctx is not None:
-                return ctx.app
+
+        ctx = _request_ctx_stack.top
+        if ctx is not None:
+            return ctx.app
+
+        try:
+            from flask import _app_ctx_stack
+            app_ctx = _app_ctx_stack.top
+            if app_ctx is not None:
+                return app_ctx.app
+        except ImportError:
+            pass
+
         raise RuntimeError('assets instance not bound to an application, '+
                             'and no application in current context')
 
@@ -292,12 +315,14 @@ class Environment(BaseEnvironment):
     def from_yaml(self, path):
         """Register bundles from a YAML configuration file"""
         bundles = YAMLLoader(path).load_bundles()
-        [self.register(name, bundle) for name, bundle in bundles.iteritems()]
+        for name in bundles:
+            self.register(name, bundles[name])
 
     def from_module(self, path):
         """Register bundles from a Python module"""
         bundles = PythonLoader(path).load_bundles()
-        [self.register(name, bundle) for name, bundle in bundles.iteritems()]
+        for name in bundles:
+            self.register(name, bundles[name])
 
 try:
     from flask.ext import script
@@ -307,16 +332,15 @@ else:
     import argparse
     from webassets.script import GenericArgparseImplementation, CommandError
 
-    class CatchAllParser(object):
-        def parse_known_args(self, app_args):
-            return argparse.Namespace(), app_args
-
     class FlaskArgparseInterface(GenericArgparseImplementation):
         """Subclass the CLI implementation to add a --parse-templates option."""
 
         def _construct_parser(self, *a, **kw):
             super(FlaskArgparseInterface, self).\
                 _construct_parser(*a, **kw)
+            self.parser.add_argument(
+                '--jinja-extension', default='*.html',
+                help='specify the glob pattern for Jinja extensions (default: *.html)')
             self.parser.add_argument(
                 '--parse-templates', action='store_true',
                 help='search project templates to find bundles')
@@ -329,7 +353,7 @@ else:
                     # Note that we exclude container bundles. By their very nature,
                     # they are guaranteed to have been created by solely referencing
                     # other bundles which are already registered.
-                    env.add(*[b for b in self.load_from_templates(env)
+                    env.add(*[b for b in self.load_from_templates(env, ns.jinja_extension)
                                     if not b.is_container])
 
                 if not len(env):
@@ -340,7 +364,7 @@ else:
                         '--parse-templates option.')
             return env
 
-        def load_from_templates(self, env):
+        def load_from_templates(self, env, jinja_extension):
             from webassets.ext.jinja2 import Jinja2Loader, AssetsExtension
             from flask import current_app as app
 
@@ -355,7 +379,8 @@ else:
                 template_dirs.append(
                     path.join(blueprint.root_path, blueprint.template_folder))
 
-            return Jinja2Loader(env, template_dirs, [jinja2_env]).load_bundles()
+            return Jinja2Loader(env, template_dirs, [jinja2_env], jinja_ext=jinja_extension).\
+                load_bundles()
 
     class ManageAssets(script.Command):
         """Manage assets."""
@@ -366,9 +391,6 @@ else:
             self.env = assets_env
             self.implementation = impl
             self.log = log
-
-        def create_parser(self, prog):
-            return CatchAllParser()
 
         def run(self, args):
             """Runs the management script.

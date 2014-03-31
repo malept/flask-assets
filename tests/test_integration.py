@@ -1,10 +1,10 @@
-from __future__ import with_statement
+from __future__ import absolute_import
 from nose.tools import assert_raises
 
 from flask import Flask
 from flask.ext.assets import Environment, Bundle
 from webassets.bundle import get_all_bundle_files
-from helpers import TempEnvironmentHelper, Module, Blueprint
+from tests.helpers import TempEnvironmentHelper, Module, Blueprint
 
 
 def test_import():
@@ -29,7 +29,7 @@ class TestUrlAndDirectory(TempEnvironmentHelper):
         TempEnvironmentHelper.setup(self)
 
         self.app = Flask(__name__, static_path='/app_static')
-        import test_module
+        from tests import test_module
         if not Blueprint:
             self.module = Module(test_module.__name__, name='module',
                                  static_path='/mod_static')
@@ -116,7 +116,7 @@ class TestUrlAndDirectory(TempEnvironmentHelper):
         self.env.directory = self.tempdir
         self.env.url = '/custom'
         self.env.debug = False   # Return build urls
-        self.env.expire = False  # No query strings
+        self.env.url_expire = False  # No query strings
 
         assert Bundle('a', output='foo').urls(self.env) == ['/custom/foo']
         # We do not recognize references to modules.
@@ -139,7 +139,7 @@ class TestUrlAndDirectory(TempEnvironmentHelper):
         """Make sure url generation works with globs."""
         self.app.static_folder = self.tempdir
         self.create_files({'a.js': 'foo', 'b.js': 'bar'})
-        assert self.mkbundle('*.js').urls(self.env) == [
+        assert list(sorted(self.mkbundle('*.js').urls(self.env))) == [
             '/app_static/a.js', '/app_static/b.js']
 
 
@@ -197,7 +197,7 @@ class TestBlueprints(TempEnvironmentHelper):
 
     def make_blueprint(self, name='module', import_name=None, **kw):
         if not import_name:
-            import test_module
+            from tests import test_module
             import_name = test_module.__name__
 
         if not Blueprint:
@@ -226,7 +226,7 @@ class TestBlueprints(TempEnvironmentHelper):
 
         # output urls - env settings are to not touch filesystem
         self.env.auto_build = False
-        self.env.expire = False
+        self.env.url_expire = False
         assert self.mkbundle(output='module/out', debug=False).urls() == ['/rasputin/out']
 
     def test_blueprint_no_static_folder(self):
